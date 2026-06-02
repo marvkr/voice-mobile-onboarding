@@ -24,6 +24,30 @@ export type OnboardingStatus = {
   profile: Profile;
 };
 
+export type VoiceSetupId =
+  | 'openai-realtime-mini'
+  | 'openai-realtime-2'
+  | 'openai-cascaded'
+  | 'deepgram-cartesia';
+
+export type VoiceSetup = {
+  id: VoiceSetupId;
+  label: string;
+  stack: string;
+  available: boolean;
+  required_env: string[];
+  missing_env: string[];
+  missing_dependencies: string[];
+  cost_note: string;
+  quality_note: string;
+};
+
+export type StartOnboardingResult = {
+  user_id: string;
+  webrtc_url: string;
+  voice_setup: VoiceSetup;
+};
+
 async function errorMessage(response: Response, fallback: string) {
   try {
     const body: unknown = await response.json();
@@ -37,13 +61,24 @@ async function errorMessage(response: Response, fallback: string) {
   return `${fallback}: ${response.status}`;
 }
 
-export async function startOnboarding(userId: string): Promise<{ user_id: string; webrtc_url: string }> {
+export async function getVoiceSetups(): Promise<VoiceSetup[]> {
+  const response = await fetch(`${API_BASE_URL}/api/voice-setups`);
+
+  if (!response.ok) {
+    throw new Error(await errorMessage(response, 'Could not read voice setups'));
+  }
+
+  return response.json();
+}
+
+export async function startOnboarding(userId: string, voiceSetup: VoiceSetupId): Promise<StartOnboardingResult> {
   const response = await fetch(`${API_BASE_URL}/api/onboarding/start`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
       'x-user-id': userId,
     },
+    body: JSON.stringify({ voice_setup: voiceSetup }),
   });
 
   if (!response.ok) {

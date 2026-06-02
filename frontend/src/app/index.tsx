@@ -17,7 +17,16 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { getOnboardingStatus, resetOnboarding, startOnboarding, USER_ID, type Profile } from '@/api';
+import {
+  getOnboardingStatus,
+  getVoiceSetups,
+  resetOnboarding,
+  startOnboarding,
+  USER_ID,
+  type Profile,
+  type VoiceSetup,
+  type VoiceSetupId,
+} from '@/api';
 
 type Message = {
   role: 'assistant' | 'user';
@@ -45,6 +54,8 @@ export default function VoiceOnboardingScreen() {
   const [transportState, setTransportState] = useState('disconnected');
   const [messages, setMessages] = useState<Message[]>([]);
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [voiceSetups, setVoiceSetups] = useState<VoiceSetup[]>([]);
+  const [selectedVoiceSetupId, setSelectedVoiceSetupId] = useState<VoiceSetupId>('openai-realtime-mini');
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -68,6 +79,27 @@ export default function VoiceOnboardingScreen() {
     animation.start();
     return () => animation.stop();
   }, [pulse]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    getVoiceSetups()
+      .then((setups) => {
+        if (!mounted) {
+          return;
+        }
+        setVoiceSetups(setups);
+      })
+      .catch((caught) => {
+        if (mounted) {
+          setError(caught instanceof Error ? caught.message : 'Could not load voice setups');
+        }
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     const onStateChange = (state: string) => setTransportState(state);
@@ -120,13 +152,24 @@ export default function VoiceOnboardingScreen() {
 
   const isConnecting = ['authenticating', 'connecting', 'connected'].includes(transportState);
   const isReady = transportState === 'ready';
+  const selectedVoiceSetup = voiceSetups.find((setup) => setup.id === selectedVoiceSetupId) ?? voiceSetups[0] ?? null;
+  const startDisabled = isConnecting || !selectedVoiceSetup?.available;
 
   async function startCall() {
     setError(null);
     setMessages([]);
 
+    if (!selectedVoiceSetup) {
+      setError('Voice setups are still loading. Try again in a moment.');
+      return;
+    }
+    if (!selectedVoiceSetup.available) {
+      setError(`${selectedVoiceSetup.label} is not configured. ${unavailableReason(selectedVoiceSetup)}`);
+      return;
+    }
+
     try {
-      const { webrtc_url: webrtcUrl } = await startOnboarding(USER_ID);
+      const { webrtc_url: webrtcUrl } = await startOnboarding(USER_ID, selectedVoiceSetup.id);
       await client.connect({ webrtcUrl });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not start voice onboarding');
@@ -170,6 +213,13 @@ export default function VoiceOnboardingScreen() {
           </Text>
         </View>
 
+        <SetupSelector
+          disabled={isConnecting || isReady}
+          onSelect={setSelectedVoiceSetupId}
+          selectedId={selectedVoiceSetup?.id ?? selectedVoiceSetupId}
+          setups={voiceSetups}
+        />
+
         <View style={styles.callCard}>
           <Animated.View
             style={[
@@ -180,6 +230,7 @@ export default function VoiceOnboardingScreen() {
               },
             ]}
           />
+          <Text style={styles.setupBadge}>{selectedVoiceSetup?.label ?? 'Loading setups'}</Text>
           <View style={styles.micCircle}>
             <Text style={styles.micGlyph}>voice</Text>
           </View>
@@ -192,12 +243,12 @@ export default function VoiceOnboardingScreen() {
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={isReady ? 'End onboarding call' : 'Start onboarding call'}
-              disabled={isConnecting}
+              disabled={!isReady && startDisabled}
               onPress={isReady ? endCall : startCall}
               style={({ pressed }) => [
                 styles.primaryButton,
-                isConnecting && styles.buttonDisabled,
-                pressed && !isConnecting && styles.buttonPressed,
+                !isReady && startDisabled && styles.buttonDisabled,
+                pressed && (isReady || !startDisabled) && styles.buttonPressed,
               ]}>
               <Text style={styles.primaryButtonText}>
                 {isReady ? 'End call' : isConnecting ? 'Connecting...' : 'Start call'}
@@ -227,6 +278,69 @@ export default function VoiceOnboardingScreen() {
   );
 }
 
+function SetupSelector({
+  disabled,
+  onSelect,
+  selectedId,
+  setups,
+}: {
+  disabled: boolean;
+  onSelect: (setupId: VoiceSetupId) => void;
+  selectedId: VoiceSetupId;
+  setups: VoiceSetup[];
+}) {
+  if (setups.length === 0) {
+    return (
+      <View style={styles.setupSection}>
+        <Text style={styles.setupTitle}>Voice setup lab</Text>
+        <Text style={styles.setupCaption}>Loading selectable voice stacks from the backend.</Text>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.setupSection}>
+      <View style={styles.setupHeaderRow}>
+        <Text style={styles.setupTitle}>Voice setup lab</Text>
+        <Text style={styles.setupCaption}>Pick a stack before the call.</Text>
+      </View>
+      <ScrollView
+        contentContainerStyle={styles.setupList}
+        horizontal
+        showsHorizontalScrollIndicator={false}>
+        {setups.map((setup) => {
+          const selected = setup.id === selectedId;
+          return (
+            <Pressable
+              accessibilityLabel={`Use ${setup.label}`}
+              accessibilityRole="button"
+              accessibilityState={{ selected, disabled }}
+              disabled={disabled}
+              key={setup.id}
+              onPress={() => onSelect(setup.id)}
+              style={({ pressed }) => [
+                styles.setupCard,
+                selected && styles.setupCardActive,
+                !setup.available && styles.setupCardUnavailable,
+                pressed && !disabled && styles.buttonPressed,
+              ]}>
+              <View style={styles.setupCardTopRow}>
+                <Text style={styles.setupLabel}>{setup.label}</Text>
+                <View style={[styles.setupPill, setup.available ? styles.setupPillReady : styles.setupPillBlocked]}>
+                  <Text style={styles.setupPillText}>{setup.available ? 'Ready' : 'Needs config'}</Text>
+                </View>
+              </View>
+              <Text style={styles.setupStack}>{setup.stack}</Text>
+              <Text style={styles.setupNote}>{setup.cost_note}</Text>
+              {!setup.available ? <Text style={styles.setupUnavailableText}>{unavailableReason(setup)}</Text> : null}
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
 function HomeScreen({ profile, onReset }: { profile: Profile | null; onReset: () => void }) {
   return (
     <SafeAreaView style={styles.homeSafeArea}>
@@ -248,6 +362,14 @@ function HomeScreen({ profile, onReset }: { profile: Profile | null; onReset: ()
       </View>
     </SafeAreaView>
   );
+}
+
+function unavailableReason(setup: VoiceSetup) {
+  const missing = [...setup.missing_env, ...setup.missing_dependencies];
+  if (missing.length === 0) {
+    return 'Backend setup is incomplete.';
+  }
+  return `Missing ${missing.join(', ')}.`;
 }
 
 function humanizeState(state: string) {
@@ -322,6 +444,95 @@ const styles = StyleSheet.create({
     fontSize: 16,
     lineHeight: 24,
   },
+  setupSection: {
+    gap: 12,
+  },
+  setupHeaderRow: {
+    gap: 4,
+  },
+  setupTitle: {
+    color: cream,
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif-medium' }),
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  setupCaption: {
+    color: 'hsl(43, 34%, 70%)',
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif' }),
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  setupList: {
+    gap: 12,
+    paddingRight: 24,
+  },
+  setupCard: {
+    width: 246,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: 'hsla(43, 77%, 82%, 0.16)',
+    borderRadius: 24,
+    backgroundColor: 'hsla(43, 77%, 92%, 0.08)',
+    padding: 16,
+  },
+  setupCardActive: {
+    borderColor: ember,
+    backgroundColor: 'hsla(24, 88%, 55%, 0.18)',
+  },
+  setupCardUnavailable: {
+    opacity: 0.72,
+  },
+  setupCardTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  setupLabel: {
+    flex: 1,
+    color: cream,
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif-medium' }),
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  setupPill: {
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+  },
+  setupPillReady: {
+    backgroundColor: 'hsla(137, 36%, 42%, 0.82)',
+  },
+  setupPillBlocked: {
+    backgroundColor: 'hsla(6, 72%, 46%, 0.78)',
+  },
+  setupPillText: {
+    color: cream,
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif-medium' }),
+    fontSize: 10,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  setupStack: {
+    color: 'hsl(43, 52%, 82%)',
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif-medium' }),
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 17,
+  },
+  setupNote: {
+    color: 'hsl(43, 34%, 70%)',
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif' }),
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  setupUnavailableText: {
+    color: 'hsl(6, 92%, 76%)',
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif-medium' }),
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 17,
+  },
   callCard: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -332,6 +543,15 @@ const styles = StyleSheet.create({
     borderRadius: 36,
     backgroundColor: 'hsla(43, 77%, 92%, 0.08)',
     overflow: 'hidden',
+  },
+  setupBadge: {
+    marginBottom: 18,
+    color: 'hsl(43, 77%, 78%)',
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif-medium' }),
+    fontSize: 12,
+    fontWeight: '800',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
   },
   pulseRing: {
     position: 'absolute',

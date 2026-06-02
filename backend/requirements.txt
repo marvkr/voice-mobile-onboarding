@@ -4,4 +4,4 @@ pydantic>=2.10.0
 pydantic-settings>=2.7.0
 python-dotenv>=1.0.1
 loguru>=0.7.2
-pipecat-ai[openai,webrtc]>=0.0.105
+pipecat-ai[openai,webrtc,deepgram,cartesia]>=0.0.105

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -39,7 +40,30 @@ class OnboardingStatus(BaseModel):
     profile: Profile
 
 
+class VoiceSetupId(StrEnum):
+    OPENAI_REALTIME_MINI = "openai-realtime-mini"
+    OPENAI_REALTIME_FULL = "openai-realtime-2"
+    OPENAI_CASCADED = "openai-cascaded"
+    DEEPGRAM_CARTESIA = "deepgram-cartesia"
+
+
+class VoiceSetup(BaseModel):
+    id: VoiceSetupId
+    label: str
+    stack: str
+    available: bool
+    required_env: list[str] = Field(default_factory=list)
+    missing_env: list[str] = Field(default_factory=list)
+    missing_dependencies: list[str] = Field(default_factory=list)
+    cost_note: str
+    quality_note: str
+
+
+class StartOnboardingRequest(BaseModel):
+    voice_setup: VoiceSetupId = VoiceSetupId.OPENAI_REALTIME_MINI
+
+
 class StartOnboardingResponse(BaseModel):
     user_id: str
     webrtc_url: str
-
+    voice_setup: VoiceSetup

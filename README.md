@@ -43,6 +43,19 @@ For a physical device, set `EXPO_PUBLIC_API_BASE_URL` in `frontend/.env` and `PU
 5. The bot calls `finish_onboarding` when setup is done.
 6. Expo polls `GET /api/onboarding/status/{user_id}` and switches to Home.
 
+## Voice setup lab
+
+The app can test multiple voice stacks from the same call UI:
+
+| Setup | Stack | Required config |
+| --- | --- | --- |
+| `openai-realtime-mini` | OpenAI native speech-to-speech with `gpt-realtime-mini` | `OPENAI_API_KEY` |
+| `openai-realtime-2` | OpenAI native speech-to-speech with `gpt-realtime-2` | `OPENAI_API_KEY` |
+| `openai-cascaded` | OpenAI STT -> OpenAI text LLM -> OpenAI TTS | `OPENAI_API_KEY` |
+| `deepgram-cartesia` | Deepgram STT -> OpenAI text LLM -> Cartesia TTS | `OPENAI_API_KEY`, `DEEPGRAM_API_KEY`, `CARTESIA_API_KEY`, `CARTESIA_VOICE_ID` |
+
+Use `GET /api/voice-setups` to see which setups are runnable on the current backend. The mobile UI shows the same availability status before starting a call.
+
 ## Production upgrades
 
 - Replace the in-memory store with Postgres.

@@ -9,8 +9,9 @@ from loguru import logger
 
 from app.bot import run_onboarding_bot
 from app.config import get_settings
-from app.models import OnboardingStatus, StartOnboardingResponse
+from app.models import OnboardingStatus, StartOnboardingRequest, StartOnboardingResponse, VoiceSetup, VoiceSetupId
 from app.profile_store import profile_store
+from app.voice_setups import get_voice_setup, get_voice_setups, resolve_voice_setup_id
 
 settings = get_settings()
 webrtc_request_handler: Any | None = None
@@ -31,12 +32,22 @@ def _require_user_id(user_id: str | None) -> str:
     return user_id
 
 
-def _require_voice_provider_configured() -> None:
-    if not settings.openai_api_key:
+def _require_voice_setup_available(voice_setup_id: VoiceSetupId) -> VoiceSetup:
+    voice_setup = get_voice_setup(settings, voice_setup_id)
+    if not voice_setup.available:
+        missing = voice_setup.missing_env + voice_setup.missing_dependencies
         raise HTTPException(
             status_code=503,
-            detail="OPENAI_API_KEY is not configured on the backend",
+            detail=f"{voice_setup.label} is not configured. Missing: {', '.join(missing)}",
         )
+    return voice_setup
+
+
+def _parse_voice_setup(value: str | VoiceSetupId | None) -> VoiceSetupId:
+    try:
+        return resolve_voice_setup_id(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Unknown voice setup: {value}") from exc
 
 
 def _jsonable_answer(answer: Any) -> Any:
@@ -65,18 +76,29 @@ async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/api/voice-setups", response_model=list[VoiceSetup])
+async def list_voice_setups() -> list[VoiceSetup]:
+    return get_voice_setups(settings)
+
+
 @app.post("/api/onboarding/start", response_model=StartOnboardingResponse)
 async def start_onboarding(
     request: Request,
+    body: StartOnboardingRequest | None = None,
     x_user_id: str | None = Header(default=None),
 ) -> StartOnboardingResponse:
-    _require_voice_provider_configured()
+    voice_setup_id = _parse_voice_setup(body.voice_setup if body else None)
+    voice_setup = _require_voice_setup_available(voice_setup_id)
     user_id = _require_user_id(x_user_id)
     profile_store.ensure_profile(user_id)
 
     base_url = settings.public_api_base_url or str(request.base_url).rstrip("/")
-    query = urlencode({"user_id": user_id})
-    return StartOnboardingResponse(user_id=user_id, webrtc_url=f"{base_url}/api/offer?{query}")
+    query = urlencode({"user_id": user_id, "voice_setup": voice_setup_id.value})
+    return StartOnboardingResponse(
+        user_id=user_id,
+        webrtc_url=f"{base_url}/api/offer?{query}",
+        voice_setup=voice_setup,
+    )
 
 
 @app.get("/api/onboarding/status/{user_id}", response_model=OnboardingStatus)
@@ -96,9 +118,11 @@ async def offer(
     request: dict[str, Any],
     background_tasks: BackgroundTasks,
     user_id: str | None = Query(default=None),
+    voice_setup: str | None = Query(default=None),
     x_user_id: str | None = Header(default=None),
 ) -> Any:
-    _require_voice_provider_configured()
+    voice_setup_id = _parse_voice_setup(voice_setup)
+    _require_voice_setup_available(voice_setup_id)
     resolved_user_id = _require_user_id(user_id or x_user_id)
 
     try:
@@ -114,7 +138,13 @@ async def offer(
         async def on_closed(webrtc_connection) -> None:
             logger.info("WebRTC connection closed for user_id={}", resolved_user_id)
 
-        background_tasks.add_task(run_onboarding_bot, connection, resolved_user_id, profile_store)
+        background_tasks.add_task(
+            run_onboarding_bot,
+            connection,
+            resolved_user_id,
+            profile_store,
+            voice_setup_id,
+        )
 
     answer = await _get_webrtc_request_handler().handle_web_request(
         SmallWebRTCRequest.from_dict(request),
@@ -127,9 +157,11 @@ async def offer(
 async def offer_ice_candidate(
     request: dict[str, Any],
     user_id: str | None = Query(default=None),
+    voice_setup: str | None = Query(default=None),
     x_user_id: str | None = Header(default=None),
 ) -> dict[str, bool]:
-    _require_voice_provider_configured()
+    voice_setup_id = _parse_voice_setup(voice_setup)
+    _require_voice_setup_available(voice_setup_id)
     _require_user_id(user_id or x_user_id)
 
     try:
