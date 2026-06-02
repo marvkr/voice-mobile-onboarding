@@ -152,24 +152,30 @@ export default function VoiceOnboardingScreen() {
 
   const isConnecting = ['authenticating', 'connecting', 'connected'].includes(transportState);
   const isReady = transportState === 'ready';
+  const callInProgress = isConnecting || isReady;
   const selectedVoiceSetup = voiceSetups.find((setup) => setup.id === selectedVoiceSetupId) ?? voiceSetups[0] ?? null;
-  const startDisabled = isConnecting || !selectedVoiceSetup?.available;
 
-  async function startCall() {
+  async function startCall(voiceSetupId = selectedVoiceSetupId) {
     setError(null);
     setMessages([]);
+    setSelectedVoiceSetupId(voiceSetupId);
 
-    if (!selectedVoiceSetup) {
+    const voiceSetup = voiceSetups.find((setup) => setup.id === voiceSetupId) ?? null;
+
+    if (callInProgress) {
+      return;
+    }
+    if (!voiceSetup) {
       setError('Voice setups are still loading. Try again in a moment.');
       return;
     }
-    if (!selectedVoiceSetup.available) {
-      setError(`${selectedVoiceSetup.label} is not configured. ${unavailableReason(selectedVoiceSetup)}`);
+    if (!voiceSetup.available) {
+      setError(`${voiceSetup.label} is not configured. ${unavailableReason(voiceSetup)}`);
       return;
     }
 
     try {
-      const { webrtc_url: webrtcUrl } = await startOnboarding(USER_ID, selectedVoiceSetup.id);
+      const { webrtc_url: webrtcUrl } = await startOnboarding(USER_ID, voiceSetup.id);
       await client.connect({ webrtcUrl });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not start voice onboarding');
@@ -214,8 +220,8 @@ export default function VoiceOnboardingScreen() {
         </View>
 
         <SetupSelector
-          disabled={isConnecting || isReady}
-          onSelect={setSelectedVoiceSetupId}
+          disabled={callInProgress}
+          onStart={startCall}
           selectedId={selectedVoiceSetup?.id ?? selectedVoiceSetupId}
           setups={voiceSetups}
         />
@@ -236,24 +242,30 @@ export default function VoiceOnboardingScreen() {
           </View>
           <Text style={styles.stateLabel}>{isReady ? 'Listening now' : humanizeState(transportState)}</Text>
           <Text style={styles.stateHint}>
-            {isReady ? 'Speak naturally. Interruptions are fine.' : 'Start the call when your backend is running.'}
+            {isReady
+              ? 'Speak naturally. Interruptions are fine.'
+              : isConnecting
+                ? `Connecting with ${selectedVoiceSetup?.label ?? 'selected setup'}.`
+                : 'Tap a setup card above to start that exact experience.'}
           </Text>
 
           <View style={styles.actions}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={isReady ? 'End onboarding call' : 'Start onboarding call'}
-              disabled={!isReady && startDisabled}
-              onPress={isReady ? endCall : startCall}
-              style={({ pressed }) => [
-                styles.primaryButton,
-                !isReady && startDisabled && styles.buttonDisabled,
-                pressed && (isReady || !startDisabled) && styles.buttonPressed,
-              ]}>
-              <Text style={styles.primaryButtonText}>
-                {isReady ? 'End call' : isConnecting ? 'Connecting...' : 'Start call'}
-              </Text>
-            </Pressable>
+            {callInProgress ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={isReady ? 'End onboarding call' : 'Connecting onboarding call'}
+                disabled={isConnecting}
+                onPress={endCall}
+                style={({ pressed }) => [
+                  styles.primaryButton,
+                  isConnecting && styles.buttonDisabled,
+                  pressed && isReady && styles.buttonPressed,
+                ]}>
+                <Text style={styles.primaryButtonText}>{isReady ? 'End call' : 'Connecting...'}</Text>
+              </Pressable>
+            ) : (
+              <Text style={styles.tapHint}>Choose a setup to launch the call.</Text>
+            )}
           </View>
         </View>
 
@@ -280,12 +292,12 @@ export default function VoiceOnboardingScreen() {
 
 function SetupSelector({
   disabled,
-  onSelect,
+  onStart,
   selectedId,
   setups,
 }: {
   disabled: boolean;
-  onSelect: (setupId: VoiceSetupId) => void;
+  onStart: (setupId: VoiceSetupId) => void;
   selectedId: VoiceSetupId;
   setups: VoiceSetup[];
 }) {
@@ -302,7 +314,7 @@ function SetupSelector({
     <View style={styles.setupSection}>
       <View style={styles.setupHeaderRow}>
         <Text style={styles.setupTitle}>Voice setup lab</Text>
-        <Text style={styles.setupCaption}>Pick a stack before the call.</Text>
+        <Text style={styles.setupCaption}>Tap a card to start a call with that exact stack.</Text>
       </View>
       <ScrollView
         contentContainerStyle={styles.setupList}
@@ -312,12 +324,14 @@ function SetupSelector({
           const selected = setup.id === selectedId;
           return (
             <Pressable
-              accessibilityLabel={`Use ${setup.label}`}
+              accessibilityLabel={
+                setup.available ? `Start onboarding with ${setup.label}` : `${setup.label} is not configured`
+              }
               accessibilityRole="button"
               accessibilityState={{ selected, disabled }}
               disabled={disabled}
               key={setup.id}
-              onPress={() => onSelect(setup.id)}
+              onPress={() => onStart(setup.id)}
               style={({ pressed }) => [
                 styles.setupCard,
                 selected && styles.setupCardActive,
@@ -333,6 +347,15 @@ function SetupSelector({
               <Text style={styles.setupStack}>{setup.stack}</Text>
               <Text style={styles.setupNote}>{setup.cost_note}</Text>
               {!setup.available ? <Text style={styles.setupUnavailableText}>{unavailableReason(setup)}</Text> : null}
+              <Text style={[styles.setupAction, setup.available ? styles.setupActionReady : styles.setupActionBlocked]}>
+                {disabled
+                  ? selected
+                    ? 'Running this setup'
+                    : 'Locked during call'
+                  : setup.available
+                    ? 'Tap to test this setup'
+                    : 'Tap to see what is missing'}
+              </Text>
             </Pressable>
           );
         })}
@@ -533,6 +556,19 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     lineHeight: 17,
   },
+  setupAction: {
+    marginTop: 2,
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif-medium' }),
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 0.2,
+  },
+  setupActionReady: {
+    color: 'hsl(43, 87%, 84%)',
+  },
+  setupActionBlocked: {
+    color: 'hsl(6, 92%, 80%)',
+  },
   callCard: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -597,6 +633,13 @@ const styles = StyleSheet.create({
   },
   actions: {
     marginTop: 24,
+  },
+  tapHint: {
+    color: 'hsl(43, 38%, 72%)',
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif-medium' }),
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
   },
   primaryButton: {
     minWidth: 178,
