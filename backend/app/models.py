@@ -59,11 +59,36 @@ class VoiceSetup(BaseModel):
     quality_note: str
 
 
+class VoiceSetupRun(BaseModel):
+    call_id: str
+    user_id: str
+    voice_setup: VoiceSetupId
+    started_at: datetime
+    ended_at: datetime | None = None
+    duration_seconds: float | None = None
+    completed: bool = False
+    profile_field_count: int = 0
+
+
+class VoiceSetupComparisonRow(BaseModel):
+    setup: VoiceSetup
+    runs: int
+    last_run: VoiceSetupRun | None = None
+    best_completed: bool = False
+    best_profile_field_count: int = 0
+
+
+class VoiceSetupComparisonResponse(BaseModel):
+    user_id: str
+    rows: list[VoiceSetupComparisonRow]
+
+
 class StartOnboardingRequest(BaseModel):
     voice_setup: VoiceSetupId = VoiceSetupId.OPENAI_REALTIME_MINI
 
 
 class StartOnboardingResponse(BaseModel):
     user_id: str
+    call_id: str
     webrtc_url: str
     voice_setup: VoiceSetup

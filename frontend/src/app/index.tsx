@@ -19,12 +19,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
   getOnboardingStatus,
+  getVoiceSetupComparison,
   getVoiceSetups,
   resetOnboarding,
   startOnboarding,
   USER_ID,
   type Profile,
   type VoiceSetup,
+  type VoiceSetupComparisonRow,
   type VoiceSetupId,
 } from '@/api';
 
@@ -55,6 +57,7 @@ export default function VoiceOnboardingScreen() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [voiceSetups, setVoiceSetups] = useState<VoiceSetup[]>([]);
+  const [comparisonRows, setComparisonRows] = useState<VoiceSetupComparisonRow[]>([]);
   const [selectedVoiceSetupId, setSelectedVoiceSetupId] = useState<VoiceSetupId>('openai-realtime-mini');
   const [error, setError] = useState<string | null>(null);
 
@@ -94,6 +97,17 @@ export default function VoiceOnboardingScreen() {
         if (mounted) {
           setError(caught instanceof Error ? caught.message : 'Could not load voice setups');
         }
+      });
+
+    getVoiceSetupComparison(USER_ID)
+      .then((comparison) => {
+        if (!mounted) {
+          return;
+        }
+        setComparisonRows(comparison.rows);
+      })
+      .catch(() => {
+        // Comparison is helpful lab context, not a reason to block the call UI.
       });
 
     return () => {
@@ -138,6 +152,9 @@ export default function VoiceOnboardingScreen() {
         .then((status) => {
           setProfile(status.profile);
           if (status.completed && status.next_screen === 'home') {
+            getVoiceSetupComparison(USER_ID)
+              .then((comparison) => setComparisonRows(comparison.rows))
+              .catch(() => undefined);
             client.disconnect();
             setScreen('home');
           }
@@ -154,6 +171,15 @@ export default function VoiceOnboardingScreen() {
   const isReady = transportState === 'ready';
   const callInProgress = isConnecting || isReady;
   const selectedVoiceSetup = voiceSetups.find((setup) => setup.id === selectedVoiceSetupId) ?? voiceSetups[0] ?? null;
+
+  async function refreshComparison() {
+    try {
+      const comparison = await getVoiceSetupComparison(USER_ID);
+      setComparisonRows(comparison.rows);
+    } catch {
+      // Avoid replacing a voice-call error with a non-critical lab refresh failure.
+    }
+  }
 
   async function startCall(voiceSetupId = selectedVoiceSetupId) {
     setError(null);
@@ -176,6 +202,7 @@ export default function VoiceOnboardingScreen() {
 
     try {
       const { webrtc_url: webrtcUrl } = await startOnboarding(USER_ID, voiceSetup.id);
+      await refreshComparison();
       await client.connect({ webrtcUrl });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Could not start voice onboarding');
@@ -185,6 +212,7 @@ export default function VoiceOnboardingScreen() {
   async function endCall() {
     await client.disconnect();
     setTransportState('disconnected');
+    await refreshComparison();
   }
 
   async function resetCall() {
@@ -225,6 +253,8 @@ export default function VoiceOnboardingScreen() {
           selectedId={selectedVoiceSetup?.id ?? selectedVoiceSetupId}
           setups={voiceSetups}
         />
+
+        <SetupComparison rows={comparisonRows} />
 
         <View style={styles.callCard}>
           <Animated.View
@@ -364,6 +394,48 @@ function SetupSelector({
   );
 }
 
+function SetupComparison({ rows }: { rows: VoiceSetupComparisonRow[] }) {
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const testedCount = rows.filter((row) => row.runs > 0).length;
+
+  return (
+    <View style={styles.comparisonPanel}>
+      <View style={styles.comparisonHeaderRow}>
+        <View style={styles.comparisonHeaderCopy}>
+          <Text style={styles.comparisonTitle}>Compare runs</Text>
+          <Text style={styles.comparisonCaption}>Completion, duration, and profile fields collected per stack.</Text>
+        </View>
+        <View style={styles.comparisonCountPill}>
+          <Text style={styles.comparisonCountText}>
+            {testedCount}/{rows.length} tested
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.comparisonRows}>
+        {rows.map((row) => (
+          <View key={row.setup.id} style={styles.comparisonRow}>
+            <View style={styles.comparisonRowCopy}>
+              <Text style={styles.comparisonSetupName}>{row.setup.label}</Text>
+              <Text style={styles.comparisonMeta}>{formatComparisonResult(row)}</Text>
+            </View>
+            <View
+              style={[
+                styles.comparisonStatusPill,
+                row.best_completed ? styles.comparisonStatusPillDone : styles.comparisonStatusPillPending,
+              ]}>
+              <Text style={styles.comparisonStatusText}>{comparisonBadgeText(row)}</Text>
+            </View>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
 function HomeScreen({ profile, onReset }: { profile: Profile | null; onReset: () => void }) {
   return (
     <SafeAreaView style={styles.homeSafeArea}>
@@ -385,6 +457,37 @@ function HomeScreen({ profile, onReset }: { profile: Profile | null; onReset: ()
       </View>
     </SafeAreaView>
   );
+}
+
+function formatComparisonResult(row: VoiceSetupComparisonRow) {
+  const lastRun = row.last_run;
+  if (!lastRun) {
+    return 'Not tested yet.';
+  }
+  if (!lastRun.ended_at) {
+    return `${row.runs} ${pluralize('run', row.runs)} - in progress - ${lastRun.profile_field_count}/6 fields`;
+  }
+
+  const duration = lastRun.duration_seconds === null ? 'duration pending' : `${Math.round(lastRun.duration_seconds)}s`;
+  const completion = lastRun.completed ? 'completed' : 'incomplete';
+  return `${row.runs} ${pluralize('run', row.runs)} - ${completion} - ${duration} - ${lastRun.profile_field_count}/6 fields`;
+}
+
+function comparisonBadgeText(row: VoiceSetupComparisonRow) {
+  if (row.best_completed) {
+    return 'Completed';
+  }
+  if (row.last_run && !row.last_run.ended_at) {
+    return 'Live';
+  }
+  if (row.runs > 0) {
+    return 'Partial';
+  }
+  return 'No run';
+}
+
+function pluralize(word: string, count: number) {
+  return count === 1 ? word : `${word}s`;
 }
 
 function unavailableReason(setup: VoiceSetup) {
@@ -568,6 +671,99 @@ const styles = StyleSheet.create({
   },
   setupActionBlocked: {
     color: 'hsl(6, 92%, 80%)',
+  },
+  comparisonPanel: {
+    gap: 14,
+    borderLeftWidth: 3,
+    borderLeftColor: ember,
+    borderRadius: 28,
+    backgroundColor: 'hsla(43, 77%, 92%, 0.1)',
+    padding: 16,
+  },
+  comparisonHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  comparisonHeaderCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  comparisonTitle: {
+    color: cream,
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif-medium' }),
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  comparisonCaption: {
+    color: 'hsl(43, 34%, 70%)',
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif' }),
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  comparisonCountPill: {
+    borderRadius: 999,
+    backgroundColor: 'hsla(24, 88%, 55%, 0.2)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  comparisonCountText: {
+    color: 'hsl(43, 87%, 84%)',
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif-medium' }),
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  comparisonRows: {
+    gap: 8,
+  },
+  comparisonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    borderRadius: 20,
+    backgroundColor: 'hsla(48, 32%, 8%, 0.3)',
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+  },
+  comparisonRowCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  comparisonSetupName: {
+    color: cream,
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif-medium' }),
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  comparisonMeta: {
+    color: 'hsl(43, 34%, 70%)',
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif' }),
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  comparisonStatusPill: {
+    minWidth: 72,
+    alignItems: 'center',
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+  },
+  comparisonStatusPillDone: {
+    backgroundColor: 'hsla(137, 36%, 42%, 0.82)',
+  },
+  comparisonStatusPillPending: {
+    borderWidth: 1,
+    borderColor: 'hsla(43, 77%, 82%, 0.18)',
+    backgroundColor: 'hsla(43, 77%, 92%, 0.07)',
+  },
+  comparisonStatusText: {
+    color: cream,
+    fontFamily: Platform.select({ ios: 'Avenir Next', android: 'sans-serif-medium' }),
+    fontSize: 10,
+    fontWeight: '900',
+    textTransform: 'uppercase',
   },
   callCard: {
     alignItems: 'center',

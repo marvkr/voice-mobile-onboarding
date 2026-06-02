@@ -54,7 +54,7 @@ The app can test multiple voice stacks from the same call UI:
 | `openai-cascaded` | OpenAI STT -> OpenAI text LLM -> OpenAI TTS | `OPENAI_API_KEY` |
 | `deepgram-cartesia` | Deepgram STT -> OpenAI text LLM -> Cartesia TTS | `OPENAI_API_KEY`, `DEEPGRAM_API_KEY`, `CARTESIA_API_KEY`, `CARTESIA_VOICE_ID` |
 
-Use `GET /api/voice-setups` to see which setups are runnable on the current backend. The mobile UI shows the same availability status before starting a call.
+Use `GET /api/voice-setups` to see which setups are runnable on the current backend. The mobile UI shows the same availability status before starting a call, and `GET /api/voice-setups/comparison/{user_id}` powers the compare panel with run count, completion, duration, and collected-profile-field metrics.
 
 ## Production upgrades
 

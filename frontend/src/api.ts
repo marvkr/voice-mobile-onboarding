@@ -44,8 +44,33 @@ export type VoiceSetup = {
 
 export type StartOnboardingResult = {
   user_id: string;
+  call_id: string;
   webrtc_url: string;
   voice_setup: VoiceSetup;
+};
+
+export type VoiceSetupRun = {
+  call_id: string;
+  user_id: string;
+  voice_setup: VoiceSetupId;
+  started_at: string;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  completed: boolean;
+  profile_field_count: number;
+};
+
+export type VoiceSetupComparisonRow = {
+  setup: VoiceSetup;
+  runs: number;
+  last_run: VoiceSetupRun | null;
+  best_completed: boolean;
+  best_profile_field_count: number;
+};
+
+export type VoiceSetupComparisonResponse = {
+  user_id: string;
+  rows: VoiceSetupComparisonRow[];
 };
 
 async function errorMessage(response: Response, fallback: string) {
@@ -66,6 +91,16 @@ export async function getVoiceSetups(): Promise<VoiceSetup[]> {
 
   if (!response.ok) {
     throw new Error(await errorMessage(response, 'Could not read voice setups'));
+  }
+
+  return response.json();
+}
+
+export async function getVoiceSetupComparison(userId: string): Promise<VoiceSetupComparisonResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/voice-setups/comparison/${encodeURIComponent(userId)}`);
+
+  if (!response.ok) {
+    throw new Error(await errorMessage(response, 'Could not compare voice setups'));
   }
 
   return response.json();

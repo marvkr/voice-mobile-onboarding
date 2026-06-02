@@ -9,7 +9,14 @@ from loguru import logger
 
 from app.bot import run_onboarding_bot
 from app.config import get_settings
-from app.models import OnboardingStatus, StartOnboardingRequest, StartOnboardingResponse, VoiceSetup, VoiceSetupId
+from app.models import (
+    OnboardingStatus,
+    StartOnboardingRequest,
+    StartOnboardingResponse,
+    VoiceSetup,
+    VoiceSetupComparisonResponse,
+    VoiceSetupId,
+)
 from app.profile_store import profile_store
 from app.voice_setups import get_voice_setup, get_voice_setups, resolve_voice_setup_id
 
@@ -81,6 +88,11 @@ async def list_voice_setups() -> list[VoiceSetup]:
     return get_voice_setups(settings)
 
 
+@app.get("/api/voice-setups/comparison/{user_id}", response_model=VoiceSetupComparisonResponse)
+async def compare_voice_setups(user_id: str) -> VoiceSetupComparisonResponse:
+    return profile_store.compare_voice_setups(user_id, get_voice_setups(settings))
+
+
 @app.post("/api/onboarding/start", response_model=StartOnboardingResponse)
 async def start_onboarding(
     request: Request,
@@ -91,11 +103,13 @@ async def start_onboarding(
     voice_setup = _require_voice_setup_available(voice_setup_id)
     user_id = _require_user_id(x_user_id)
     profile_store.ensure_profile(user_id)
+    run = profile_store.start_voice_setup_run(user_id, voice_setup_id)
 
     base_url = settings.public_api_base_url or str(request.base_url).rstrip("/")
-    query = urlencode({"user_id": user_id, "voice_setup": voice_setup_id.value})
+    query = urlencode({"user_id": user_id, "voice_setup": voice_setup_id.value, "call_id": run.call_id})
     return StartOnboardingResponse(
         user_id=user_id,
+        call_id=run.call_id,
         webrtc_url=f"{base_url}/api/offer?{query}",
         voice_setup=voice_setup,
     )
@@ -119,11 +133,13 @@ async def offer(
     background_tasks: BackgroundTasks,
     user_id: str | None = Query(default=None),
     voice_setup: str | None = Query(default=None),
+    call_id: str | None = Query(default=None),
     x_user_id: str | None = Header(default=None),
 ) -> Any:
     voice_setup_id = _parse_voice_setup(voice_setup)
     _require_voice_setup_available(voice_setup_id)
     resolved_user_id = _require_user_id(user_id or x_user_id)
+    resolved_call_id = call_id or profile_store.start_voice_setup_run(resolved_user_id, voice_setup_id).call_id
 
     try:
         from pipecat.transports.smallwebrtc.request_handler import SmallWebRTCRequest
@@ -144,6 +160,7 @@ async def offer(
             resolved_user_id,
             profile_store,
             voice_setup_id,
+            resolved_call_id,
         )
 
     answer = await _get_webrtc_request_handler().handle_web_request(

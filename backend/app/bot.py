@@ -16,10 +16,13 @@ async def run_onboarding_bot(
     user_id: str,
     store: InMemoryProfileStore,
     voice_setup_id: VoiceSetupId | str = VoiceSetupId.OPENAI_REALTIME_MINI,
+    call_id: str | None = None,
 ) -> None:
     settings = get_settings()
     if not settings.openai_api_key:
         logger.error("OPENAI_API_KEY is not configured; cannot start onboarding bot")
+        if call_id:
+            store.finish_voice_setup_run(user_id, call_id)
         return
 
     voice_setup_id = VoiceSetupId(voice_setup_id)
@@ -154,6 +157,9 @@ async def run_onboarding_bot(
             voice_setup_id.value,
         )
         await task.cancel()
+    finally:
+        if call_id:
+            store.finish_voice_setup_run(user_id, call_id)
 
 
 def _build_openai_realtime_pipeline(
